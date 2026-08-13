@@ -67,18 +67,19 @@ async function readStore(): Promise<AutomationStore> {
 async function saveStore(store: AutomationStore) {
   await mkdir(dataDirectory, { recursive: true });
   const temporaryPath = `${storePath}.tmp`;
-  await writeFile(temporaryPath, JSON.stringify(store, null, 2), "utf8");
+  await writeFile(temporaryPath, JSON.stringify(store, null, 2), { encoding: "utf8", mode: 0o600 });
   await rename(temporaryPath, storePath);
 }
 
 function mutate<T>(operation: (store: AutomationStore) => T | Promise<T>) {
-  let result: T;
-  queue = queue.then(async () => {
+  const run = queue.catch(() => undefined).then(async () => {
     const store = await readStore();
-    result = await operation(store);
+    const result = await operation(store);
     await saveStore(store);
+    return result;
   });
-  return queue.then(() => result!);
+  queue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 export async function listAutomations() {

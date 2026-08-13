@@ -1,13 +1,25 @@
+name: ascn-broadcast-crm
+
 services:
   app:
     build: .
     restart: unless-stopped
-    env_file:
-      - .env
+    init: true
     environment:
       DATA_DIR: /app/data
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      APP_URL: ${APP_URL:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_GRAPH_API_VERSION: ${WHATSAPP_GRAPH_API_VERSION:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
     ports:
-      - "3000:3000"
+      - "${ASCN_HOST_PORT:-3000}:3000"
     volumes:
       - ascn_data:/app/data
 

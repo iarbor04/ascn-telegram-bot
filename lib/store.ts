@@ -44,18 +44,19 @@ async function readStore(): Promise<Store> {
 async function saveStore(store: Store) {
   await mkdir(dataDirectory, { recursive: true });
   const temporaryPath = `${storePath}.tmp`;
-  await writeFile(temporaryPath, JSON.stringify(store, null, 2), "utf8");
+  await writeFile(temporaryPath, JSON.stringify(store, null, 2), { encoding: "utf8", mode: 0o600 });
   await rename(temporaryPath, storePath);
 }
 
 function mutate<T>(operation: (store: Store) => T | Promise<T>) {
-  let result: T;
-  writeQueue = writeQueue.then(async () => {
+  const run = writeQueue.catch(() => undefined).then(async () => {
     const store = await readStore();
-    result = await operation(store);
+    const result = await operation(store);
     await saveStore(store);
+    return result;
   });
-  return writeQueue.then(() => result!);
+  writeQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 function sourceName(channel: InboundMessage["channel"]): StoredLead["source"] {

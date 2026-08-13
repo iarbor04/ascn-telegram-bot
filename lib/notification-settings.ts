@@ -51,25 +51,27 @@ export async function getNotificationSettings() {
 export async function saveNotificationSettings(input: Omit<NotificationSettings, "lastSummaryDate">) {
   const current = await getNotificationSettings();
   const settings = normalize({ ...input, lastSummaryDate: current.lastSummaryDate });
-  writeQueue = writeQueue.then(async () => {
+  const run = writeQueue.catch(() => undefined).then(async () => {
     await mkdir(dataDirectory, { recursive: true });
     const temporaryPath = `${settingsPath}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(settings, null, 2), { encoding: "utf8", mode: 0o600 });
     await rename(temporaryPath, settingsPath);
   });
-  await writeQueue;
+  writeQueue = run.then(() => undefined, () => undefined);
+  await run;
   return settings;
 }
 
 async function markSummarySent(settings: NotificationSettings, date: string) {
   const updated = { ...settings, lastSummaryDate: date };
-  writeQueue = writeQueue.then(async () => {
+  const run = writeQueue.catch(() => undefined).then(async () => {
     await mkdir(dataDirectory, { recursive: true });
     const temporaryPath = `${settingsPath}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(updated, null, 2), { encoding: "utf8", mode: 0o600 });
     await rename(temporaryPath, settingsPath);
   });
-  await writeQueue;
+  writeQueue = run.then(() => undefined, () => undefined);
+  await run;
 }
 
 function escapeHtml(value: string) {

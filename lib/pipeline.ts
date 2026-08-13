@@ -50,7 +50,7 @@ async function readStages() {
 async function writeStages(stages: PipelineStage[]) {
   await mkdir(dataDirectory, { recursive: true });
   const temporaryPath = `${pipelinePath}.tmp`;
-  await writeFile(temporaryPath, JSON.stringify({ stages }, null, 2), "utf8");
+  await writeFile(temporaryPath, JSON.stringify({ stages }, null, 2), { encoding: "utf8", mode: 0o600 });
   await rename(temporaryPath, pipelinePath);
 }
 
@@ -62,6 +62,10 @@ export async function getPipelineStages() {
 export function savePipelineStages(value: unknown) {
   const stages = normalizeStages(value);
   if (!stages) throw new Error("Укажите от 1 до 8 уникальных этапов и выберите один финальный этап");
-  queue = queue.then(() => writeStages(stages));
-  return queue.then(() => stages.map((stage) => ({ ...stage })));
+  const run = queue.catch(() => undefined).then(async () => {
+    await writeStages(stages);
+    return stages.map((stage) => ({ ...stage }));
+  });
+  queue = run.then(() => undefined, () => undefined);
+  return run;
 }
