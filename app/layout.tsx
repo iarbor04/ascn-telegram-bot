@@ -23,8 +23,8 @@ export async function generateMetadata(): Promise<Metadata> {
     title: "ASCN.AI Agent — Telegram & WhatsApp CRM",
     description: "Лиды, диалоги, мультиязычные рассылки и автоцепочки в одном кабинете.",
     icons: {
-      icon: "/favicon.svg",
-      shortcut: "/favicon.svg",
+      icon: "/emblem.svg",
+      shortcut: "/emblem.svg",
     },
     openGraph: {
       title: "ASCN.AI Agent — Telegram & WhatsApp CRM",
