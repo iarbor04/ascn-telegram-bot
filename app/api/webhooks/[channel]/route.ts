@@ -1,10 +1,15 @@
 import { getChannelAdapter } from "@/lib/channels";
+import { saveInboundMessages } from "@/lib/store";
+import { enrollInboundMessages } from "@/lib/automations";
+import { processDueAutomations } from "@/lib/automation-runner";
+import { getWhatsAppConfigSync } from "@/lib/channel-config";
+import { sendOperatorNotifications } from "@/lib/notification-settings";
 
 export async function GET(request: Request, context: { params: Promise<{ channel: string }> }) {
   const { channel } = await context.params;
   if (channel !== "whatsapp") return Response.json({ ok: false }, { status: 405 });
   const url = new URL(request.url);
-  const expected = process.env.WHATSAPP_VERIFY_TOKEN;
+  const expected = getWhatsAppConfigSync()?.verifyToken;
   if (url.searchParams.get("hub.mode") === "subscribe" && expected && url.searchParams.get("hub.verify_token") === expected) {
     return new Response(url.searchParams.get("hub.challenge") ?? "", { status: 200 });
   }
@@ -29,6 +34,9 @@ export async function POST(request: Request, context: { params: Promise<{ channe
   }
 
   const messages = adapter.parseWebhook(payload);
-  // The normalized messages are ready to be inserted into PostgreSQL or sent to a queue.
-  return Response.json({ ok: true, accepted: messages.length });
+  const accepted = await saveInboundMessages(messages);
+  await enrollInboundMessages(messages);
+  await sendOperatorNotifications(messages);
+  void processDueAutomations();
+  return Response.json({ ok: true, accepted });
 }

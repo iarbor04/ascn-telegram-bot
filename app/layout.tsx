@@ -20,20 +20,20 @@ export async function generateMetadata(): Promise<Metadata> {
   const previewImage = `${protocol}://${host}/og.png`;
 
   return {
-    title: "ASCN Broadcast — Telegram & WhatsApp CRM",
+    title: "ASCN.AI Agent — Telegram & WhatsApp CRM",
     description: "Лиды, диалоги, мультиязычные рассылки и автоцепочки в одном кабинете.",
     icons: {
       icon: "/favicon.svg",
       shortcut: "/favicon.svg",
     },
     openGraph: {
-      title: "ASCN Broadcast — Telegram & WhatsApp CRM",
+      title: "ASCN.AI Agent — Telegram & WhatsApp CRM",
       description: "Лиды, диалоги, мультиязычные рассылки и автоцепочки в одном кабинете.",
       images: [previewImage],
     },
     twitter: {
       card: "summary_large_image",
-      title: "ASCN Broadcast — Telegram & WhatsApp CRM",
+      title: "ASCN.AI Agent — Telegram & WhatsApp CRM",
       description: "Лиды, диалоги, мультиязычные рассылки и автоцепочки в одном кабинете.",
       images: [previewImage],
     },

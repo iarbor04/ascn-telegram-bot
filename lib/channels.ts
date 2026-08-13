@@ -1,11 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { getTelegramConfigSync, getWhatsAppConfigSync } from "@/lib/channel-config";
+import { readImage, uploadFileNameFromUrl } from "@/lib/uploads";
 
-export type ChannelId = "telegram" | "whatsapp" | "avito" | "max";
+export type ChannelId = "telegram" | "whatsapp";
 
 export type OutboundMessage = {
   recipientId: string;
   text: string;
   imageUrl?: string;
+  buttons?: Array<{ text: string; url: string }>;
 };
 
 export type InboundMessage = {
@@ -14,6 +17,9 @@ export type InboundMessage = {
   externalUserId?: string;
   text: string;
   receivedAt: string;
+  displayName?: string;
+  handle?: string;
+  language?: string;
 };
 
 type JsonObject = Record<string, unknown>;
@@ -27,12 +33,6 @@ export type ChannelAdapter = {
 };
 
 export class ChannelConfigurationError extends Error {}
-
-function requiredEnv(name: string) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new ChannelConfigurationError(`Missing environment variable: ${name}`);
-  return value;
-}
 
 function secureEqual(actual: string, expected: string) {
   const actualBuffer = Buffer.from(actual);
@@ -64,15 +64,39 @@ function array(value: unknown) {
   return Array.isArray(value) ? value : [];
 }
 
+function whatsappText(value: string) {
+  return value
+    .replace(/<b>([\s\S]*?)<\/b>/gi, "*$1*")
+    .replace(/<strong>([\s\S]*?)<\/strong>/gi, "*$1*")
+    .replace(/<i>([\s\S]*?)<\/i>/gi, "_$1_")
+    .replace(/<em>([\s\S]*?)<\/em>/gi, "_$1_")
+    .replace(/<u>([\s\S]*?)<\/u>/gi, "$1")
+    .replace(/<a\s+href=["']([^"']+)["']>([\s\S]*?)<\/a>/gi, "$2 ($1)")
+    .replace(/<[^>]+>/g, "");
+}
+
 const telegram: ChannelAdapter = {
   id: "telegram",
-  isConfigured: () => Boolean(process.env.TELEGRAM_BOT_TOKEN),
+  isConfigured: () => Boolean(getTelegramConfigSync()?.botToken),
   async send(message) {
-    const token = requiredEnv("TELEGRAM_BOT_TOKEN");
+    const token = getTelegramConfigSync()?.botToken;
+    if (!token) throw new ChannelConfigurationError("Telegram-бот не подключён");
     const method = message.imageUrl ? "sendPhoto" : "sendMessage";
+    const replyMarkup = message.buttons?.length ? { inline_keyboard: message.buttons.map((button) => [{ text: button.text, url: button.url }]) } : undefined;
+    const localFileName = message.imageUrl ? uploadFileNameFromUrl(message.imageUrl) : "";
+    if (localFileName) {
+      const image = await readImage(localFileName);
+      const formData = new FormData();
+      formData.set("chat_id", message.recipientId);
+      formData.set("caption", message.text);
+      formData.set("parse_mode", "HTML");
+      if (replyMarkup) formData.set("reply_markup", JSON.stringify(replyMarkup));
+      formData.set("photo", new Blob([new Uint8Array(image.data)], { type: image.type }), image.fileName);
+      return requestJson(`https://api.telegram.org/bot${token}/sendPhoto`, { method: "POST", body: formData });
+    }
     const payload = message.imageUrl
-      ? { chat_id: message.recipientId, photo: message.imageUrl, caption: message.text, parse_mode: "HTML" }
-      : { chat_id: message.recipientId, text: message.text, parse_mode: "HTML" };
+      ? { chat_id: message.recipientId, photo: message.imageUrl, caption: message.text, parse_mode: "HTML", reply_markup: replyMarkup }
+      : { chat_id: message.recipientId, text: message.text, parse_mode: "HTML", reply_markup: replyMarkup };
     return requestJson(`https://api.telegram.org/bot${token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -80,7 +104,7 @@ const telegram: ChannelAdapter = {
     });
   },
   verifyWebhook(headers) {
-    const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    const secret = getTelegramConfigSync()?.webhookSecret;
     return Boolean(secret && secureEqual(headers.get("x-telegram-bot-api-secret-token") ?? "", secret));
   },
   parseWebhook(payload) {
@@ -89,20 +113,38 @@ const telegram: ChannelAdapter = {
     const from = object(message.from);
     const chatId = String(chat.id ?? "");
     if (!chatId) return [];
-    return [{ channel: "telegram", externalChatId: chatId, externalUserId: String(from.id ?? "") || undefined, text: text(message.text ?? message.caption), receivedAt: new Date(Number(message.date ?? Date.now() / 1000) * 1000).toISOString() }];
+    const firstName = text(from.first_name);
+    const lastName = text(from.last_name);
+    const username = text(from.username);
+    return [{ channel: "telegram", externalChatId: chatId, externalUserId: String(from.id ?? "") || undefined, text: text(message.text ?? message.caption), receivedAt: new Date(Number(message.date ?? Date.now() / 1000) * 1000).toISOString(), displayName: [firstName, lastName].filter(Boolean).join(" ") || username || undefined, handle: username ? `@${username}` : undefined, language: text(from.language_code) || undefined }];
   },
 };
 
 const whatsapp: ChannelAdapter = {
   id: "whatsapp",
-  isConfigured: () => Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID && process.env.WHATSAPP_GRAPH_API_VERSION),
+  isConfigured: () => Boolean(getWhatsAppConfigSync()?.accessToken && getWhatsAppConfigSync()?.phoneNumberId),
   async send(message) {
-    const token = requiredEnv("WHATSAPP_ACCESS_TOKEN");
-    const phoneNumberId = requiredEnv("WHATSAPP_PHONE_NUMBER_ID");
-    const apiVersion = requiredEnv("WHATSAPP_GRAPH_API_VERSION");
+    const config = getWhatsAppConfigSync();
+    if (!config) throw new ChannelConfigurationError("WhatsApp не подключён");
+    const token = config.accessToken;
+    const phoneNumberId = config.phoneNumberId;
+    const apiVersion = config.apiVersion;
+    const buttonLinks = message.buttons?.map((button) => `${button.text}: ${button.url}`).join("\n");
+    const outboundText = whatsappText([message.text, buttonLinks].filter(Boolean).join("\n\n"));
+    const localFileName = message.imageUrl ? uploadFileNameFromUrl(message.imageUrl) : "";
+    let imageId = "";
+    if (localFileName) {
+      const image = await readImage(localFileName);
+      const formData = new FormData();
+      formData.set("messaging_product", "whatsapp");
+      formData.set("type", image.type);
+      formData.set("file", new Blob([new Uint8Array(image.data)], { type: image.type }), image.fileName);
+      const uploaded = await requestJson(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/media`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: formData }) as JsonObject;
+      imageId = text(uploaded.id);
+    }
     const content = message.imageUrl
-      ? { type: "image", image: { link: message.imageUrl, caption: message.text } }
-      : { type: "text", text: { body: message.text, preview_url: true } };
+      ? { type: "image", image: imageId ? { id: imageId, caption: outboundText } : { link: message.imageUrl, caption: outboundText } }
+      : { type: "text", text: { body: outboundText, preview_url: true } };
     return requestJson(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -110,7 +152,7 @@ const whatsapp: ChannelAdapter = {
     });
   },
   verifyWebhook(headers, rawBody) {
-    const secret = process.env.WHATSAPP_APP_SECRET;
+    const secret = getWhatsAppConfigSync()?.appSecret;
     if (!secret) return false;
     const signature = headers.get("x-hub-signature-256") ?? "";
     const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
@@ -132,78 +174,7 @@ const whatsapp: ChannelAdapter = {
   },
 };
 
-let avitoTokenCache: { value: string; expiresAt: number } | null = null;
-
-async function getAvitoToken() {
-  if (process.env.AVITO_ACCESS_TOKEN) return process.env.AVITO_ACCESS_TOKEN;
-  if (avitoTokenCache && avitoTokenCache.expiresAt > Date.now() + 60_000) return avitoTokenCache.value;
-  const clientId = requiredEnv("AVITO_CLIENT_ID");
-  const clientSecret = requiredEnv("AVITO_CLIENT_SECRET");
-  const response = await requestJson("https://api.avito.ru/token/", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
-  }) as JsonObject;
-  const value = text(response.access_token);
-  if (!value) throw new Error("Avito did not return an access token");
-  avitoTokenCache = { value, expiresAt: Date.now() + Number(response.expires_in ?? 3600) * 1000 };
-  return value;
-}
-
-const avito: ChannelAdapter = {
-  id: "avito",
-  isConfigured: () => Boolean(process.env.AVITO_USER_ID && (process.env.AVITO_ACCESS_TOKEN || (process.env.AVITO_CLIENT_ID && process.env.AVITO_CLIENT_SECRET))),
-  async send(message) {
-    const userId = requiredEnv("AVITO_USER_ID");
-    const token = await getAvitoToken();
-    return requestJson(`https://api.avito.ru/messenger/v1/accounts/${encodeURIComponent(userId)}/chats/${encodeURIComponent(message.recipientId)}/messages`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ type: "text", message: { text: message.text } }),
-    });
-  },
-  verifyWebhook(_headers, _rawBody, requestUrl) {
-    const secret = process.env.AVITO_WEBHOOK_SECRET;
-    return Boolean(secret && secureEqual(new URL(requestUrl).searchParams.get("secret") ?? "", secret));
-  },
-  parseWebhook(payload) {
-    const event = object(payload.payload ?? payload);
-    const value = object(event.value ?? event);
-    const content = object(value.content ?? value.message);
-    const chatId = String(value.chat_id ?? event.chat_id ?? "");
-    if (!chatId) return [];
-    return [{ channel: "avito", externalChatId: chatId, externalUserId: String(value.user_id ?? value.author_id ?? "") || undefined, text: text(content.text ?? value.text), receivedAt: new Date(Number(value.created ?? value.created_at ?? Date.now() / 1000) * 1000).toISOString() }];
-  },
-};
-
-const max: ChannelAdapter = {
-  id: "max",
-  isConfigured: () => Boolean(process.env.MAX_BOT_TOKEN),
-  async send(message) {
-    const token = requiredEnv("MAX_BOT_TOKEN");
-    const attachments = message.imageUrl ? [{ type: "image", payload: { url: message.imageUrl } }] : undefined;
-    return requestJson(`https://platform-api2.max.ru/messages?user_id=${encodeURIComponent(message.recipientId)}`, {
-      method: "POST",
-      headers: { authorization: token, "content-type": "application/json" },
-      body: JSON.stringify({ text: message.text, format: "html", attachments, notify: true }),
-    });
-  },
-  verifyWebhook(headers) {
-    const secret = process.env.MAX_WEBHOOK_SECRET;
-    return Boolean(secret && secureEqual(headers.get("x-max-bot-api-secret") ?? "", secret));
-  },
-  parseWebhook(payload) {
-    const message = object(payload.message);
-    const body = object(message.body);
-    const sender = object(message.sender);
-    const recipient = object(message.recipient);
-    const chatId = String(recipient.chat_id ?? message.chat_id ?? sender.user_id ?? "");
-    if (!chatId) return [];
-    return [{ channel: "max", externalChatId: chatId, externalUserId: String(sender.user_id ?? "") || undefined, text: text(body.text ?? message.text), receivedAt: new Date(Number(message.timestamp ?? Date.now())).toISOString() }];
-  },
-};
-
-const adapters: Record<ChannelId, ChannelAdapter> = { telegram, whatsapp, avito, max };
+const adapters: Record<ChannelId, ChannelAdapter> = { telegram, whatsapp };
 
 export function getChannelAdapter(channel: string) {
   return adapters[channel as ChannelId] ?? null;
