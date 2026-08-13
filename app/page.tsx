@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import { Cable, Columns3, MessagesSquare, Send, Settings, Workflow, type LucideIcon } from "lucide-react";
+import { Cable, Columns3, MessagesSquare, Paperclip, Send, Settings, Workflow, type LucideIcon } from "lucide-react";
 
 type View = "pipeline" | "inbox" | "broadcasts" | "automation" | "channels" | "settings";
 type LeadStatus = string;
@@ -47,6 +47,12 @@ const languages = [
 
 function emptyLanguageMessages() {
   return Object.fromEntries(languages.map((language) => [language.id, ""]));
+}
+
+function makeId(prefix = "item") {
+  const cryptoApi = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 const navItems: { id: View; label: string; icon: LucideIcon }[] = [
@@ -236,7 +242,7 @@ function Pipeline({ leads, setLeads, stages, setStages, stats, moveLead, setView
 
   function addDraft() {
     if (draftStages.length >= 8) return notify("Можно создать не больше восьми этапов");
-    setDraftStages((current) => [...current, { id: `stage-${crypto.randomUUID()}`, title: "Новый этап", color: "gray", isWon: false }]);
+    setDraftStages((current) => [...current, { id: `stage-${makeId()}`, title: "Новый этап", color: "gray", isWon: false }]);
   }
 
   async function saveStages() {
@@ -310,7 +316,9 @@ function Inbox({ leads, stages, notify, setView }: { leads: Lead[]; stages: Pipe
   const [selected, setSelected] = useState("");
   const [conversationQuery, setConversationQuery] = useState("");
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<{ id: string; direction: "inbound" | "outbound"; text: string; createdAt: string }[]>([]);
+  const [messages, setMessages] = useState<{ id: string; direction: "inbound" | "outbound"; text: string; imageUrl?: string; createdAt: string }[]>([]);
+  const [imageUrl, setImageUrl] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
   const activeLeadId = selected || leads[0]?.id || "";
   const lead = leads.find((item) => item.id === activeLeadId) || null;
   const visibleConversations = leads.filter((item) => `${item.name} ${item.handle} ${item.message}`.toLowerCase().includes(conversationQuery.toLowerCase()));
@@ -326,21 +334,34 @@ function Inbox({ leads, stages, notify, setView }: { leads: Lead[]; stages: Pipe
   if (!lead) return <><PageHeader eyebrow="ЕДИНЫЙ ИНБОКС" title="Диалоги" text="Telegram и WhatsApp в одном окне." /><EmptyState title="Диалогов пока нет" text="Подключите канал. Первый человек, который напишет боту, автоматически появится здесь." action="Подключить канал" onAction={() => setView("channels")} /></>;
   const leadId = lead.id;
 
+  async function uploadChatImage(file?: File) {
+    if (!file) return;
+    setUploadingImage(true);
+    const formData = new FormData();
+    formData.set("file", file);
+    const response = await fetch("/api/uploads", { method: "POST", body: formData });
+    const result = await response.json().catch(() => ({}));
+    setUploadingImage(false);
+    if (!response.ok) return notify(result.error || "Не удалось загрузить фото");
+    setImageUrl(result.url);
+  }
+
   async function sendMessage() {
     const cleanMessage = message.trim();
-    if (!cleanMessage) return;
-    const response = await fetch("/api/messages/reply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leadId, text: cleanMessage }) });
-    const result = await response.json();
+    if (!cleanMessage && !imageUrl) return;
+    const response = await fetch("/api/messages/reply", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leadId, text: cleanMessage, imageUrl: imageUrl || undefined }) });
+    const result = await response.json().catch(() => ({}));
     if (!response.ok) return notify(result.error || "Не удалось отправить сообщение");
     setMessages((current) => [...current, result.message]);
     setMessage("");
+    setImageUrl("");
     notify("Сообщение отправлено");
   }
   return <>
     <PageHeader eyebrow="ЕДИНЫЙ ИНБОКС" title="Диалоги" text="Telegram и WhatsApp в одном окне — вместе с историей и статусом лида." />
     <div className="inbox-layout">
       <section className="conversation-list"><div className="conversation-search">⌕ <input aria-label="Поиск диалогов" placeholder="Найти диалог" value={conversationQuery} onChange={(event) => setConversationQuery(event.target.value)} /></div>{visibleConversations.map((item) => <button key={item.id} className={activeLeadId === item.id ? "selected" : ""} onClick={() => setSelected(item.id)}><span className="lead-avatar">{item.name[0]}</span><div><strong>{item.name}</strong><p>{item.message}</p></div><time>{new Date(item.updatedAt).toLocaleDateString("ru-RU")}</time>{item.unread ? <b>{item.unread}</b> : null}</button>)}</section>
-      <section className="chat-panel"><header><div className="lead-avatar">{lead.name[0]}</div><div><strong>{lead.name}</strong><span>{lead.source}</span></div></header><div className="messages">{messages.map((item) => <div key={item.id} className={`bubble ${item.direction === "inbound" ? "incoming" : "outgoing"}`}>{item.text}<time>{new Date(item.createdAt).toLocaleString("ru-RU")}</time></div>)}</div><footer><input aria-label="Новое сообщение" placeholder="Напишите сообщение..." value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") sendMessage(); }} /><button className="send-button" aria-label="Отправить сообщение" onClick={sendMessage}>➤</button></footer></section>
+      <section className="chat-panel"><header><div className="lead-avatar">{lead.name[0]}</div><div><strong>{lead.name}</strong><span>{lead.source}</span></div></header><div className="messages">{messages.map((item) => <div key={item.id} className={`bubble ${item.direction === "inbound" ? "incoming" : "outgoing"}`}>{item.imageUrl && <a className="message-media" href={item.imageUrl} target="_blank" rel="noreferrer"><Image className="message-image" src={item.imageUrl} alt="Фото в сообщении" width={280} height={220} unoptimized /></a>}{item.text && !(item.imageUrl && item.text === "Фото") && <p>{item.text}</p>}<time>{new Date(item.createdAt).toLocaleString("ru-RU")}</time></div>)}</div><footer>{imageUrl && <div className="chat-image-preview"><Image src={imageUrl} alt="Фото к отправке" width={80} height={60} unoptimized /><button type="button" aria-label="Удалить фото" onClick={() => setImageUrl("")}>×</button></div>}<label className="chat-upload" aria-label="Прикрепить фото" title="Прикрепить фото"><Paperclip size={18} strokeWidth={2} /><input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploadingImage} onChange={(event) => void uploadChatImage(event.target.files?.[0])} /></label><input className="chat-message-input" aria-label="Новое сообщение" placeholder="Напишите сообщение..." value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") sendMessage(); }} /><button className="send-button" aria-label="Отправить сообщение" disabled={uploadingImage} onClick={sendMessage}>➤</button></footer></section>
       <aside className="contact-panel"><div className="lead-avatar large">{lead.name[0]}</div><h3>{lead.name}</h3><p>{lead.handle}</p><dl><div><dt>Язык</dt><dd>{lead.language}</dd></div><div><dt>Канал</dt><dd>{lead.source}</dd></div><div><dt>Этап</dt><dd>{stages.find((item) => item.id === lead.status)?.title || "Не указан"}</dd></div><div><dt>Последняя активность</dt><dd>{new Date(lead.updatedAt).toLocaleString("ru-RU")}</dd></div></dl></aside>
     </div>
   </>;
@@ -381,7 +402,7 @@ function Broadcasts({ activeLanguage, setActiveLanguage, drafts, setDrafts, edit
   }
 
   function addButton() {
-    if (buttons.length < 3) setButtons((current) => [...current, { id: crypto.randomUUID(), text: "", url: "" }]);
+    if (buttons.length < 3) setButtons((current) => [...current, { id: makeId(), text: "", url: "" }]);
   }
 
   function updateButton(id: string, changes: Partial<{ text: string; url: string }>) {
@@ -445,7 +466,7 @@ function Automation({ notify }: { notify: (message: string) => void }) {
   function startNew() {
     setEditingId("");
     setName("");
-    setSteps([{ id: crypto.randomUUID(), delayMinutes: "10", messages: emptyLanguageMessages(), activeLanguage: "ru", enabled: true, buttons: [] }]);
+    setSteps([{ id: makeId(), delayMinutes: "10", messages: emptyLanguageMessages(), activeLanguage: "ru", enabled: true, buttons: [] }]);
     setEditing(true);
   }
 
@@ -459,7 +480,7 @@ function Automation({ notify }: { notify: (message: string) => void }) {
       activeLanguage: step.messages?.ru || step.message ? "ru" : Object.keys(step.messages || {}).find((language) => step.messages[language]) || "ru",
       enabled: step.enabled ?? true,
       imageUrl: step.imageUrl,
-      buttons: step.buttons.map((button) => ({ id: crypto.randomUUID(), ...button })),
+      buttons: step.buttons.map((button) => ({ id: makeId(), ...button })),
     })));
     setEditing(true);
   }
@@ -468,7 +489,7 @@ function Automation({ notify }: { notify: (message: string) => void }) {
     setEditing(false);
     setEditingId("");
     setName("");
-    setSteps([{ id: crypto.randomUUID(), delayMinutes: "10", messages: emptyLanguageMessages(), activeLanguage: "ru", enabled: true, buttons: [] }]);
+    setSteps([{ id: makeId(), delayMinutes: "10", messages: emptyLanguageMessages(), activeLanguage: "ru", enabled: true, buttons: [] }]);
   }
 
   function updateStep(id: string, changes: Partial<AutomationStepDraft>) {
@@ -476,7 +497,7 @@ function Automation({ notify }: { notify: (message: string) => void }) {
   }
 
   function addStep() {
-    setSteps((current) => [...current, { id: crypto.randomUUID(), delayMinutes: "60", messages: emptyLanguageMessages(), activeLanguage: "ru", enabled: true, buttons: [] }]);
+    setSteps((current) => [...current, { id: makeId(), delayMinutes: "60", messages: emptyLanguageMessages(), activeLanguage: "ru", enabled: true, buttons: [] }]);
   }
 
   async function uploadStepImage(stepId: string, file?: File) {
@@ -499,7 +520,7 @@ function Automation({ notify }: { notify: (message: string) => void }) {
   }
 
   function addStepButton(stepId: string) {
-    setSteps((current) => current.map((step) => step.id === stepId && step.buttons.length < 3 ? { ...step, buttons: [...step.buttons, { id: crypto.randomUUID(), text: "", url: "" }] } : step));
+    setSteps((current) => current.map((step) => step.id === stepId && step.buttons.length < 3 ? { ...step, buttons: [...step.buttons, { id: makeId(), text: "", url: "" }] } : step));
   }
 
   function updateStepButton(stepId: string, buttonId: string, changes: Partial<{ text: string; url: string }>) {

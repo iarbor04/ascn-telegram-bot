@@ -22,6 +22,7 @@ export type StoredMessage = {
   leadId: string;
   direction: "inbound" | "outbound";
   text: string;
+  imageUrl?: string;
   createdAt: string;
 };
 
@@ -124,7 +125,7 @@ export async function saveInboundMessages(messages: InboundMessage[]) {
           unread: 1,
         });
       }
-      store.messages.push({ id: crypto.randomUUID(), leadId, direction: "inbound", text: message.text, createdAt: now });
+      store.messages.push({ id: crypto.randomUUID(), leadId, direction: "inbound", text: message.text, imageUrl: message.imageUrl, createdAt: now });
     }
     return messages.length;
   });
@@ -161,10 +162,10 @@ export function markLeadRead(id: string) {
   });
 }
 
-export function saveOutboundMessage(leadId: string, text: string) {
+export function saveOutboundMessage(leadId: string, text: string, imageUrl?: string) {
   return mutate((store) => {
     const createdAt = new Date().toISOString();
-    const message: StoredMessage = { id: crypto.randomUUID(), leadId, direction: "outbound", text, createdAt };
+    const message: StoredMessage = { id: crypto.randomUUID(), leadId, direction: "outbound", text, imageUrl, createdAt };
     store.messages.push(message);
     const lead = store.leads.find((item) => item.id === leadId);
     if (lead) {

@@ -33,7 +33,7 @@ export async function POST(request: Request, context: { params: Promise<{ channe
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const messages = adapter.parseWebhook(payload);
+  const messages = await adapter.parseWebhook(payload);
   const accepted = await saveInboundMessages(messages);
   await enrollInboundMessages(messages);
   await sendOperatorNotifications(messages);

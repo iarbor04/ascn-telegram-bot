@@ -13,10 +13,15 @@ function safeFileName(value: string) {
 export async function saveImage(file: File) {
   const extension = imageTypes[file.type];
   if (!extension) throw new Error("Поддерживаются JPG, PNG, WEBP и GIF");
-  if (file.size > 10 * 1024 * 1024) throw new Error("Файл должен быть меньше 10 МБ");
+  return saveImageBuffer(Buffer.from(await file.arrayBuffer()), extension);
+}
+
+export async function saveImageBuffer(data: Buffer, extension: string) {
+  if (!Object.values(imageTypes).includes(extension)) throw new Error("Неподдерживаемый формат изображения");
+  if (data.length > 10 * 1024 * 1024) throw new Error("Файл должен быть меньше 10 МБ");
   const fileName = `${crypto.randomUUID()}.${extension}`;
   await mkdir(uploadsDirectory, { recursive: true });
-  await writeFile(path.join(uploadsDirectory, fileName), Buffer.from(await file.arrayBuffer()), { mode: 0o600 });
+  await writeFile(path.join(uploadsDirectory, fileName), data, { mode: 0o600 });
   return { fileName, url: `/api/uploads/${fileName}` };
 }
 

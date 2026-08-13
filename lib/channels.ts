@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getTelegramConfigSync, getWhatsAppConfigSync } from "@/lib/channel-config";
-import { readImage, uploadFileNameFromUrl } from "@/lib/uploads";
+import { readImage, saveImageBuffer, uploadFileNameFromUrl } from "@/lib/uploads";
 
 export type ChannelId = "telegram" | "whatsapp";
 
@@ -16,6 +16,7 @@ export type InboundMessage = {
   externalChatId: string;
   externalUserId?: string;
   text: string;
+  imageUrl?: string;
   receivedAt: string;
   displayName?: string;
   handle?: string;
@@ -29,7 +30,7 @@ export type ChannelAdapter = {
   isConfigured: () => boolean;
   send: (message: OutboundMessage) => Promise<unknown>;
   verifyWebhook: (headers: Headers, rawBody: string, requestUrl: string) => boolean;
-  parseWebhook: (payload: JsonObject) => InboundMessage[];
+  parseWebhook: (payload: JsonObject) => InboundMessage[] | Promise<InboundMessage[]>;
 };
 
 export class ChannelConfigurationError extends Error {}
@@ -107,16 +108,37 @@ const telegram: ChannelAdapter = {
     const secret = getTelegramConfigSync()?.webhookSecret;
     return Boolean(secret && secureEqual(headers.get("x-telegram-bot-api-secret-token") ?? "", secret));
   },
-  parseWebhook(payload) {
+  async parseWebhook(payload) {
     const message = object(payload.message ?? payload.edited_message);
     const chat = object(message.chat);
     const from = object(message.from);
     const chatId = String(chat.id ?? "");
     if (!chatId) return [];
+    const photos = array(message.photo).map(object);
+    const largestPhoto = photos[photos.length - 1];
+    let imageUrl = "";
+    const fileId = text(largestPhoto?.file_id);
+    if (fileId) {
+      try {
+        const config = getTelegramConfigSync();
+        const fileInfo = await requestJson(`https://api.telegram.org/bot${config?.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, { method: "GET" }) as JsonObject;
+        const filePath = text(object(fileInfo.result).file_path);
+        if (filePath) {
+          const imageResponse = await fetch(`https://api.telegram.org/file/bot${config?.botToken}/${filePath}`, { signal: AbortSignal.timeout(15_000) });
+          if (imageResponse.ok) {
+            const contentType = imageResponse.headers.get("content-type") || "image/jpeg";
+            const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+            imageUrl = (await saveImageBuffer(Buffer.from(await imageResponse.arrayBuffer()), extension)).url;
+          }
+        }
+      } catch {
+        imageUrl = "";
+      }
+    }
     const firstName = text(from.first_name);
     const lastName = text(from.last_name);
     const username = text(from.username);
-    return [{ channel: "telegram", externalChatId: chatId, externalUserId: String(from.id ?? "") || undefined, text: text(message.text ?? message.caption), receivedAt: new Date(Number(message.date ?? Date.now() / 1000) * 1000).toISOString(), displayName: [firstName, lastName].filter(Boolean).join(" ") || username || undefined, handle: username ? `@${username}` : undefined, language: text(from.language_code) || undefined }];
+    return [{ channel: "telegram", externalChatId: chatId, externalUserId: String(from.id ?? "") || undefined, text: text(message.text ?? message.caption) || (imageUrl ? "Фото" : ""), imageUrl: imageUrl || undefined, receivedAt: new Date(Number(message.date ?? Date.now() / 1000) * 1000).toISOString(), displayName: [firstName, lastName].filter(Boolean).join(" ") || username || undefined, handle: username ? `@${username}` : undefined, language: text(from.language_code) || undefined }];
   },
 };
 
