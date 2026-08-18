@@ -1,4 +1,5 @@
 import { getChannelAdapter } from "@/lib/channels";
+import { applyTemplate, firstName } from "@/lib/message-text";
 import { listLeads, saveOutboundMessage } from "@/lib/store";
 import { getPipelineStages } from "@/lib/pipeline";
 
@@ -26,10 +27,17 @@ export async function POST(request: Request) {
     const draftKey = languageMap[normalizedLanguage] || "ru";
     const message = (body.drafts?.[draftKey] || body.drafts?.ru || "").trim();
     if (!message) throw new Error(`No message for ${draftKey}`);
-    const text = message.replaceAll("{{first_name}}", lead.name.split(" ")[0] || "");
+    const text = applyTemplate(message, { firstName: firstName(lead.name) });
     await adapter.send({ recipientId, text, imageUrl, buttons });
     await saveOutboundMessage(lead.id, text);
   }));
   const sent = results.filter((result) => result.status === "fulfilled").length;
-  return Response.json({ ok: sent === leads.length, sent, failed: leads.length - sent }, { status: sent ? 200 : 502 });
+  const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason instanceof Error ? result.reason.message : "Канал не принял сообщение"] : []);
+  return Response.json({
+    ok: sent === leads.length,
+    sent,
+    failed: leads.length - sent,
+    // Without the reason a partial send looks like a success to the owner.
+    error: failures.length ? [...new Set(failures)].slice(0, 3).join("; ") : undefined,
+  }, { status: sent ? 200 : 502 });
 }

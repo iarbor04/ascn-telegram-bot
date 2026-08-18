@@ -1,4 +1,4 @@
-import { getChannelAdapter } from "@/lib/channels";
+import { ChannelConfigurationError, getChannelAdapter } from "@/lib/channels";
 import { getLead, saveOutboundMessage } from "@/lib/store";
 
 export async function POST(request: Request) {
@@ -11,7 +11,12 @@ export async function POST(request: Request) {
   const [channel, recipientId] = lead.id.split(":", 2);
   const adapter = getChannelAdapter(channel);
   if (!adapter?.isConfigured()) return Response.json({ ok: false, error: "Channel is not configured" }, { status: 503 });
-  await adapter.send({ recipientId, text, imageUrl });
+  try {
+    await adapter.send({ recipientId, text, imageUrl });
+  } catch (error) {
+    const status = error instanceof ChannelConfigurationError ? 503 : 502;
+    return Response.json({ ok: false, error: error instanceof Error ? error.message : "Канал не принял сообщение" }, { status });
+  }
   const message = await saveOutboundMessage(lead.id, text, imageUrl);
   return Response.json({ ok: true, message });
 }

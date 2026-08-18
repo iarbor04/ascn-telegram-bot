@@ -23,6 +23,8 @@ export async function POST(request: Request, context: { params: Promise<{ channe
 
   const rawBody = await request.text();
   if (!adapter.verifyWebhook(request.headers, rawBody, request.url)) {
+    // A rejected webhook is invisible from the outside, so say why it was dropped in the service log.
+    console.warn(`[webhooks] ${channel}: подпись не подтверждена. Подключите канал в кабинете, чтобы вебхук получил секрет.`);
     return Response.json({ ok: false, error: "Invalid webhook signature" }, { status: 401 });
   }
 

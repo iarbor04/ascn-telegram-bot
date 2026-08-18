@@ -27,6 +27,8 @@ type AutomationJob = {
   leadId: string;
   dueAt: string;
   status: "pending" | "processing" | "sent" | "failed" | "cancelled";
+  claimedAt?: string;
+  attempts?: number;
   error?: string;
 };
 
@@ -35,6 +37,9 @@ type LegacyAutomation = Partial<Automation> & { id: string; name: string; delayM
 
 const dataDirectory = process.env.DATA_DIR?.trim() || path.join(process.cwd(), ".data");
 const storePath = path.join(dataDirectory, "automations.json");
+const staleClaimMinutes = 10;
+const maxAttempts = 3;
+const jobRetentionDays = 14;
 let queue = Promise.resolve();
 
 function normalizeStore(raw: { automations?: LegacyAutomation[]; jobs?: Array<Partial<AutomationJob> & Pick<AutomationJob, "id" | "automationId" | "leadId" | "dueAt" | "status">> }): AutomationStore {
@@ -167,11 +172,30 @@ export function enrollInboundMessages(messages: InboundMessage[]) {
   });
 }
 
+// A restart between claiming a job and sending it used to strand the step in "processing" forever,
+// and finished jobs were never removed from the file.
+function recoverAndPrune(store: AutomationStore, nowMs: number) {
+  const staleBefore = new Date(nowMs - staleClaimMinutes * 60_000).toISOString();
+  for (const job of store.jobs) {
+    if (job.status !== "processing" || (job.claimedAt && job.claimedAt > staleBefore)) continue;
+    if ((job.attempts ?? 0) >= maxAttempts) {
+      job.status = "failed";
+      job.error = "Отправка прервана перезапуском сервиса";
+    } else {
+      job.status = "pending";
+    }
+  }
+  const retainAfter = new Date(nowMs - jobRetentionDays * 86_400_000).toISOString();
+  store.jobs = store.jobs.filter((job) => job.status === "pending" || job.status === "processing" || job.dueAt > retainAfter);
+}
+
 export function claimDueJobs() {
   return mutate((store) => {
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    recoverAndPrune(store, nowMs);
+    const now = new Date(nowMs).toISOString();
     const jobs = store.jobs.filter((job) => job.status === "pending" && job.dueAt <= now).slice(0, 20);
-    jobs.forEach((job) => { job.status = "processing"; });
+    jobs.forEach((job) => { job.status = "processing"; job.claimedAt = now; job.attempts = (job.attempts ?? 0) + 1; });
     return jobs.map((job) => {
       const automation = store.automations.find((item) => item.id === job.automationId) || null;
       return { ...job, automation, step: automation?.steps[job.stepIndex] || null };

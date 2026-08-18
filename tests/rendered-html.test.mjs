@@ -78,6 +78,11 @@ test("ships product metadata without the starter marker", async () => {
   assert.doesNotMatch(html, /codex-preview/);
 });
 
+test("does not warn about an open dashboard when a password is set", async () => {
+  const response = await fetch(baseUrl, { headers: { authorization } });
+  assert.doesNotMatch(await response.text(), /Кабинет открыт без пароля/);
+});
+
 test("rejects unsupported channel webhooks", async () => {
   const response = await fetch(`${baseUrl}/api/webhooks/unsupported`, {
     method: "POST",
@@ -90,7 +95,7 @@ test("rejects unsupported channel webhooks", async () => {
 test("reports channel configuration without exposing secrets", async () => {
   const response = await fetch(`${baseUrl}/api/channels/status`, { headers: { authorization } });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { telegram: false, telegramBotUsername: "", telegramBotName: "", whatsapp: false, whatsappPhoneNumber: "", whatsappVerifiedName: "" });
+  assert.deepEqual(await response.json(), { adminProtected: true, telegram: false, telegramBotUsername: "", telegramBotName: "", whatsapp: false, whatsappPhoneNumber: "", whatsappVerifiedName: "" });
 });
 
 test("saves multi-step automation sequences", async () => {

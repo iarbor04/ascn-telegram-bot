@@ -6,6 +6,7 @@ export async function GET() {
   const telegram = getTelegramConfigSync();
   const whatsapp = getWhatsAppConfigSync();
   return Response.json({
+    adminProtected: Boolean(process.env.ADMIN_PASSWORD),
     telegram: Boolean(getChannelAdapter("telegram")?.isConfigured()),
     telegramBotUsername: telegram?.botUsername || "",
     telegramBotName: telegram?.botName || "",

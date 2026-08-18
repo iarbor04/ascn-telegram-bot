@@ -1,5 +1,6 @@
 import { claimDueJobs, finishJob } from "@/lib/automations";
 import { getChannelAdapter } from "@/lib/channels";
+import { applyTemplate, firstName } from "@/lib/message-text";
 import { getLead, saveOutboundMessage } from "@/lib/store";
 
 let running = false;
@@ -20,7 +21,7 @@ export async function processDueAutomations() {
         const recipientId = lead.id.slice(channel.length + 1);
         const language = lead.language.toLowerCase().split(/[-_]/)[0];
         const template = job.step.messages[language] || job.step.messages.ru || job.step.message || Object.values(job.step.messages)[0];
-        const text = template.replaceAll("{{first_name}}", lead.name.split(" ")[0] || lead.name);
+        const text = applyTemplate(template, { firstName: firstName(lead.name) });
         await adapter.send({ recipientId, text, imageUrl: job.step.imageUrl, buttons: job.step.buttons });
         await saveOutboundMessage(lead.id, text);
         await finishJob(job.id);

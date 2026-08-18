@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { getTelegramConfigSync, getWhatsAppConfigSync } from "@/lib/channel-config";
+import { attachmentLabel } from "@/lib/message-text";
 import { readImage, saveImageBuffer, uploadFileNameFromUrl } from "@/lib/uploads";
 
 export type ChannelId = "telegram" | "whatsapp";
@@ -35,10 +36,21 @@ export type ChannelAdapter = {
 
 export class ChannelConfigurationError extends Error {}
 
+// Overridable so the flows can be exercised against a local stub instead of the live providers.
+const telegramApiBase = process.env.TELEGRAM_API_BASE?.trim().replace(/\/$/, "") || "https://api.telegram.org";
+const whatsappApiBase = process.env.WHATSAPP_API_BASE?.trim().replace(/\/$/, "") || "https://graph.facebook.com";
+
 function secureEqual(actual: string, expected: string) {
   const actualBuffer = Buffer.from(actual);
   const expectedBuffer = Buffer.from(expected);
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+// Telegram answers with `description` and Graph API with `error.message`. Passing that text on
+// is what lets the owner see "chat not found" or "bot was blocked by the user" instead of a bare code.
+function providerError(body: unknown, status: number) {
+  const payload = object(body);
+  return text(payload.description) || text(object(payload.error).message) || `Канал ответил ошибкой HTTP ${status}`;
 }
 
 async function requestJson(url: string, init: RequestInit) {
@@ -48,7 +60,7 @@ async function requestJson(url: string, init: RequestInit) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(`Channel API request failed with HTTP ${response.status}`);
+    throw new Error(providerError(body, response.status));
   }
   return body;
 }
@@ -93,12 +105,12 @@ const telegram: ChannelAdapter = {
       formData.set("parse_mode", "HTML");
       if (replyMarkup) formData.set("reply_markup", JSON.stringify(replyMarkup));
       formData.set("photo", new Blob([new Uint8Array(image.data)], { type: image.type }), image.fileName);
-      return requestJson(`https://api.telegram.org/bot${token}/sendPhoto`, { method: "POST", body: formData });
+      return requestJson(`${telegramApiBase}/bot${token}/sendPhoto`, { method: "POST", body: formData });
     }
     const payload = message.imageUrl
       ? { chat_id: message.recipientId, photo: message.imageUrl, caption: message.text, parse_mode: "HTML", reply_markup: replyMarkup }
       : { chat_id: message.recipientId, text: message.text, parse_mode: "HTML", reply_markup: replyMarkup };
-    return requestJson(`https://api.telegram.org/bot${token}/${method}`, {
+    return requestJson(`${telegramApiBase}/bot${token}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -121,10 +133,10 @@ const telegram: ChannelAdapter = {
     if (fileId) {
       try {
         const config = getTelegramConfigSync();
-        const fileInfo = await requestJson(`https://api.telegram.org/bot${config?.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, { method: "GET" }) as JsonObject;
+        const fileInfo = await requestJson(`${telegramApiBase}/bot${config?.botToken}/getFile?file_id=${encodeURIComponent(fileId)}`, { method: "GET" }) as JsonObject;
         const filePath = text(object(fileInfo.result).file_path);
         if (filePath) {
-          const imageResponse = await fetch(`https://api.telegram.org/file/bot${config?.botToken}/${filePath}`, { signal: AbortSignal.timeout(15_000) });
+          const imageResponse = await fetch(`${telegramApiBase}/file/bot${config?.botToken}/${filePath}`, { signal: AbortSignal.timeout(15_000) });
           if (imageResponse.ok) {
             const contentType = imageResponse.headers.get("content-type") || "image/jpeg";
             const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
@@ -138,7 +150,7 @@ const telegram: ChannelAdapter = {
     const firstName = text(from.first_name);
     const lastName = text(from.last_name);
     const username = text(from.username);
-    return [{ channel: "telegram", externalChatId: chatId, externalUserId: String(from.id ?? "") || undefined, text: text(message.text ?? message.caption) || (imageUrl ? "Фото" : ""), imageUrl: imageUrl || undefined, receivedAt: new Date(Number(message.date ?? Date.now() / 1000) * 1000).toISOString(), displayName: [firstName, lastName].filter(Boolean).join(" ") || username || undefined, handle: username ? `@${username}` : undefined, language: text(from.language_code) || undefined }];
+    return [{ channel: "telegram", externalChatId: chatId, externalUserId: String(from.id ?? "") || undefined, text: text(message.text ?? message.caption) || (imageUrl ? "Фото" : attachmentLabel(message)), imageUrl: imageUrl || undefined, receivedAt: new Date(Number(message.date ?? Date.now() / 1000) * 1000).toISOString(), displayName: [firstName, lastName].filter(Boolean).join(" ") || username || undefined, handle: username ? `@${username}` : undefined, language: text(from.language_code) || undefined }];
   },
 };
 
@@ -161,13 +173,13 @@ const whatsapp: ChannelAdapter = {
       formData.set("messaging_product", "whatsapp");
       formData.set("type", image.type);
       formData.set("file", new Blob([new Uint8Array(image.data)], { type: image.type }), image.fileName);
-      const uploaded = await requestJson(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/media`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: formData }) as JsonObject;
+      const uploaded = await requestJson(`${whatsappApiBase}/${apiVersion}/${phoneNumberId}/media`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: formData }) as JsonObject;
       imageId = text(uploaded.id);
     }
     const content = message.imageUrl
       ? { type: "image", image: imageId ? { id: imageId, caption: outboundText } : { link: message.imageUrl, caption: outboundText } }
       : { type: "text", text: { body: outboundText, preview_url: true } };
-    return requestJson(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+    return requestJson(`${whatsappApiBase}/${apiVersion}/${phoneNumberId}/messages`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ messaging_product: "whatsapp", recipient_type: "individual", to: message.recipientId, ...content }),
@@ -185,11 +197,23 @@ const whatsapp: ChannelAdapter = {
       const entry = object(entryValue);
       return array(entry.changes).flatMap((changeValue) => {
         const value = object(object(changeValue).value);
+        const contacts = array(value.contacts).map(object);
         return array(value.messages).map((messageValue) => {
           const message = object(messageValue);
+          const from = text(message.from);
+          const contact = contacts.find((item) => text(item.wa_id) === from) ?? contacts[0];
+          const profileName = text(object(contact?.profile).name);
           const messageText = object(message.text);
           const image = object(message.image);
-          return { channel: "whatsapp" as const, externalChatId: text(message.from), externalUserId: text(message.from) || undefined, text: text(messageText.body ?? image.caption), receivedAt: new Date(Number(message.timestamp ?? Date.now() / 1000) * 1000).toISOString() };
+          return {
+            channel: "whatsapp" as const,
+            externalChatId: from,
+            externalUserId: from || undefined,
+            text: text(messageText.body ?? image.caption) || attachmentLabel(message),
+            receivedAt: new Date(Number(message.timestamp ?? Date.now() / 1000) * 1000).toISOString(),
+            displayName: profileName || undefined,
+            handle: from ? `+${from}` : undefined,
+          };
         }).filter((message) => message.externalChatId);
       });
     });
